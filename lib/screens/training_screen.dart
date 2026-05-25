@@ -1,93 +1,94 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../data/training_data.dart';
 import '../models/exercise.dart';
+import '../services/storage_service.dart';
 
 class TrainingScreen extends StatefulWidget {
-  const TrainingScreen({super.key});
+  const TrainingScreen({super.key, this.date});
+
+  /// If null, uses today's date.
+  final DateTime? date;
 
   @override
   State<TrainingScreen> createState() => _TrainingScreenState();
 }
 
 class _TrainingScreenState extends State<TrainingScreen> {
-  static const String _prefsKey = 'completed_exercises_v1';
-
-  final Set<String> _completed = <String>{};
-  bool _loaded = false;
+  late DateTime _date;
+  late WorkoutDay _workout;
+  StorageService? _store;
+  Set<String> _done = {};
 
   @override
   void initState() {
     super.initState();
-    _loadState();
+    _date = widget.date ?? DateTime.now();
+    _workout = workoutFor(_date.weekday);
+    _init();
   }
 
-  Future<void> _loadState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getStringList(_prefsKey) ?? <String>[];
+  Future<void> _init() async {
+    final s = await StorageService.create();
     if (!mounted) return;
     setState(() {
-      _completed
-        ..clear()
-        ..addAll(stored);
-      _loaded = true;
+      _store = s;
+      _done = s.getDone(_date);
     });
   }
 
-  Future<void> _persist() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_prefsKey, _completed.toList());
-  }
-
-  void _toggle(String id, bool? value) {
+  Future<void> _toggle(String id, bool? value) async {
+    final v = value ?? false;
     setState(() {
-      if (value == true) {
-        _completed.add(id);
+      if (v) {
+        _done.add(id);
       } else {
-        _completed.remove(id);
+        _done.remove(id);
       }
     });
-    _persist();
+    await _store?.toggleDone(_date, id, v);
   }
 
   Future<void> _resetAll() async {
-    setState(_completed.clear);
-    await _persist();
+    setState(_done.clear);
+    await _store?.setDone(_date, _done);
   }
 
   Future<void> _openVideo(String url) async {
-    final Uri uri = Uri.parse(url);
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final ok = await launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
     if (!ok && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo abrir el vídeo: $url')),
+        SnackBar(content: Text('No se pudo abrir: $url')),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_loaded) {
+    if (_store == null) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    final int total = todayExercises.length;
-    final int done = _completed.where(
-      (id) => todayExercises.any((e) => e.id == id),
-    ).length;
-    final double progress = total == 0 ? 0 : done / total;
+    final exercises = _workout.exercises;
+    final total = exercises.length;
+    final done = _done.where((id) => exercises.any((e) => e.id == id)).length;
+    final progress = total == 0 ? 0.0 : done / total;
+    final dateLabel = DateFormat("EEEE d 'de' MMMM", 'es').format(_date);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Entrenamiento de Hoy'),
+        title: Text(_workout.name),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Reiniciar',
+            tooltip: 'Reiniciar día',
             onPressed: _resetAll,
           ),
         ],
@@ -104,18 +105,19 @@ class _TrainingScreenState extends State<TrainingScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Objetivo del Día',
-                        style: TextStyle(
-                          fontSize: 22,
+                      Text(
+                        dateLabel,
+                        style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _workout.focus,
+                        style: const TextStyle(
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const SizedBox(height: 10),
-                      const Text(
-                        'Resistencia natación + estabilidad hombro + core',
-                      ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 16),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(6),
                         child: LinearProgressIndicator(
@@ -123,24 +125,24 @@ class _TrainingScreenState extends State<TrainingScreen> {
                           minHeight: 12,
                         ),
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 8),
                       Text('$done de $total ejercicios completados'),
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               Expanded(
                 child: ListView.builder(
-                  itemCount: todayExercises.length,
+                  itemCount: exercises.length,
                   itemBuilder: (context, index) {
-                    final Exercise ex = todayExercises[index];
-                    final bool isDone = _completed.contains(ex.id);
+                    final Exercise ex = exercises[index];
+                    final isDone = _done.contains(ex.id);
                     return Card(
                       color: Colors.grey[900],
-                      margin: const EdgeInsets.only(bottom: 15),
+                      margin: const EdgeInsets.only(bottom: 12),
                       child: Padding(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(14),
                         child: Row(
                           children: [
                             Checkbox(
@@ -154,7 +156,7 @@ class _TrainingScreenState extends State<TrainingScreen> {
                                   Text(
                                     ex.name,
                                     style: TextStyle(
-                                      fontSize: 20,
+                                      fontSize: 18,
                                       fontWeight: FontWeight.bold,
                                       decoration: isDone
                                           ? TextDecoration.lineThrough
@@ -164,12 +166,12 @@ class _TrainingScreenState extends State<TrainingScreen> {
                                           : Colors.white,
                                     ),
                                   ),
-                                  const SizedBox(height: 5),
+                                  const SizedBox(height: 4),
                                   Text(
                                     ex.sets,
                                     style: TextStyle(color: Colors.grey[400]),
                                   ),
-                                  const SizedBox(height: 8),
+                                  const SizedBox(height: 6),
                                   GestureDetector(
                                     onTap: () => _openVideo(ex.videoUrl),
                                     child: const Text(
